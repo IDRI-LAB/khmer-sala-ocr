@@ -1,0 +1,191 @@
+Perform a high-fidelity OCR and document layout extraction on ALL attached images
+for DeepSeek OCR-style training data generation.
+
+You will receive one or more images. Process EVERY image.
+For each image, output a SOURCE block first, then all markup blocks for that image.
+
+SOURCE block format:
+--- SOURCE: {filename.png} ---
+
+If the filename is known, use it. Otherwise use the index: Image 1, Image 2, etc.
+
+STRICT OUTPUT REQUIREMENTS
+
+1. Coordinate System
+- Use normalized coordinates in the range [0-1000].
+- Bounding box format MUST be:
+  [[x1, y1, x2, y2]]
+- Coordinates must tightly fit only the visible text region.
+
+2. Output Serialization Format
+Return ONLY the following markup format:
+<|ref|>{broad_type}|{fine_type}<|/ref|><|det|>[[x1, y1, x2, y2]]<|/det|>
+content text
+
+For tables, use this format instead (no <|det|> block):
+<|ref|>table|table<|/ref|>
+content
+
+3. Broad Types
+Allowed broad types:
+- text
+- table
+- equation
+- image
+
+4. Fine-Grained Types
+The lists below are common examples, NOT an exhaustive list.
+If you encounter a block that does not match any listed fine-grained type,
+infer the most semantically appropriate label in lowercase_snake_case.
+Never skip a block just because its type is not listed here.
+
+For text broad type, common fine-grained types include:
+- header
+- subheader
+- paragraph
+- list_item
+- footer
+- caption
+- label
+- note
+- title
+- subtitle
+- address
+- date
+- page_number
+- quote
+(use others as needed)
+
+For table broad type, use fine-grained type:
+- table
+
+For equation broad type, common fine-grained types include:
+- equation         (standalone block math)
+- inline_equation  (math embedded within a line of text)
+(use others as needed)
+
+For image broad type, common fine-grained types include:
+- figure           (diagram, illustration, drawing)
+- photo            (photograph)
+- chart            (bar chart, pie chart, line graph)
+- diagram          (flowchart, architecture diagram)
+- icon             (small decorative or functional icon)
+- logo             (brand or institutional logo)
+- signature        (handwritten signature)
+- stamp            (official stamp or seal)
+(use others as needed)
+
+5. Image Rules
+- For image blocks, include only the bounding box. No content text.
+- The bbox must tightly cover the entire visible image or figure region.
+- Example:
+  <|ref|>image|figure<|/ref|><|det|>[[100, 200, 450, 500]]<|/det|>
+
+  <|ref|>image|chart<|/ref|><|det|>[[50, 300, 600, 700]]<|/det|>
+
+  <|ref|>image|signature<|/ref|><|det|>[[400, 800, 650, 860]]<|/det|>
+
+6. Table Rules
+- Serialize tables as HTML using <table>, <tr>, <td> tags.
+- Preserve all cell values exactly as they appear.
+- Merge cells are not required; represent each cell as individual <td>.
+- Do NOT include a <|det|> block for tables.
+- Example:
+  <|ref|>table|table<|/ref|>
+  <table><tr><td>Header1</td><td>Header2</td></tr><tr><td>val1</td><td>val2</td></tr></table>
+
+7. Equation Rules
+- Serialize all math expressions as LaTeX.
+- Use \[ \] for block/standalone equations.
+- Use \( \) for inline equations.
+- Preserve all symbols, fractions, exponents, and subscripts exactly.
+- Example block:   \[ \frac{7 \cdot 4}{2} = 14 \]
+- Example inline:  \( x^2 + y^2 = z^2 \)
+
+8. English Language Rules
+- If any text is in English, extract it exactly as it appears.
+- Do NOT translate English text to Khmer or any other language.
+- Do NOT translate Khmer text to English.
+- Preserve the original language of every text block faithfully.
+
+9. Khmer OCR Rules
+- Preserve Khmer diacritics exactly.
+- Preserve subscripts (ជើងអក្សរ).
+- Preserve punctuation and spacing faithfully.
+- Do not normalize or rewrite text.
+
+10. Reading Order
+- Output blocks strictly in natural reading order.
+- Top-to-bottom first.
+- Left-to-right within the same row.
+
+11. Output Restrictions
+- Do NOT return JSON.
+- Do NOT explain anything.
+- Do NOT add markdown.
+- Do NOT add conversational text.
+- Do NOT add any text between images other than the SOURCE block.
+- Return ONLY the SOURCE blocks and markup blocks.
+
+12. Bounding Box Rules
+- Use one bbox per semantic text block.
+- Do not merge distant regions.
+- Keep boxes tight around text.
+
+Few-Shot Examples
+
+-- Text examples --
+
+<|ref|>text|header<|/ref|><|det|>[[14, 8, 277, 27]]<|/det|>
+១. លក្ខណៈនៃកម្មវិធីសិក្សា
+
+<|ref|>text|paragraph<|/ref|><|det|>[[14, 92, 935, 282]]<|/det|>
+សាកលវិទ្យាល័យភូមិន្ទភ្នំពេញគឺជាគ្រឹះស្ថានឧត្តមសិក្សារដ្ឋ...
+
+<|ref|>text|list_item<|/ref|><|det|>[[84, 825, 915, 874]]<|/det|>
+- លើកកម្ពស់គុណភាពគ្រូបង្រៀន
+
+<|ref|>text|paragraph<|/ref|><|det|>[[14, 300, 935, 400]]<|/det|>
+The Royal University of Phnom Penh was established in 1960.
+
+<|ref|>text|note<|/ref|><|det|>[[14, 900, 500, 920]]<|/det|>
+* សម្គាល់៖ ឯកសារនេះមានសុពលភាពរហូតដល់ឆ្នាំ២០២៥
+
+-- Table example --
+
+<|ref|>table|table<|/ref|>
+<table><tr><td>មុខវិជ្ជា</td><td>ឯកតា</td><td>ថ្នាក់</td></tr><tr><td>គណិតវិទ្យា</td><td>3</td><td>A</td></tr><tr><td>រូបវិទ្យា</td><td>4</td><td>B</td></tr></table>
+
+-- Equation examples --
+
+<|ref|>equation|equation<|/ref|><|det|>[[460, 217, 550, 256]]<|/det|>
+\[ \frac{7 \cdot 4}{2} = 14 \]
+
+<|ref|>equation|inline_equation<|/ref|><|det|>[[100, 300, 400, 320]]<|/det|>
+\( x^2 + y^2 = z^2 \)
+
+-- Image examples --
+
+<|ref|>image|figure<|/ref|><|det|>[[100, 100, 500, 400]]<|/det|>
+
+<|ref|>image|chart<|/ref|><|det|>[[50, 420, 600, 700]]<|/det|>
+
+<|ref|>image|signature<|/ref|><|det|>[[400, 850, 650, 900]]<|/det|>
+
+-- Multi-image output example --
+
+--- SOURCE: Image 1 ---
+<|ref|>text|header<|/ref|><|det|>[[14, 8, 277, 27]]<|/det|>
+១. លក្ខណៈនៃកម្មវិធីសិក្សា
+
+<|ref|>text|paragraph<|/ref|><|det|>[[14, 92, 935, 282]]<|/det|>
+សាកលវិទ្យាល័យភូមិន្ទភ្នំពេញ...
+
+--- SOURCE: Image 2 ---
+<|ref|>text|header<|/ref|><|det|>[[20, 10, 300, 35]]<|/det|>
+២. គោលបំណងនៃកម្មវិធីសិក្សា
+
+<|ref|>text|paragraph<|/ref|><|det|>[[20, 50, 900, 200]]<|/det|>
+កម្មវិធីសិក្សានេះមានគោលបំណង...
+
+Task: Process ALL attached images now. Output a SOURCE block before each image's markup. Return ONLY the SOURCE blocks and markup blocks, nothing else.
