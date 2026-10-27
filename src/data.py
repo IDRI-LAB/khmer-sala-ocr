@@ -1,98 +1,47 @@
-# Copyright (c) 2024-2026 Unsloth AI (https://github.com/unslothai/notebooks)
-# 
-# This file contains code derived from the Unsloth AI notebooks collection.
-# Modified and converted from .ipynb (https://github.com/unslothai/notebooks/blob/main/nb/Deepseek_OCR_2_(3B).ipynb) to .py by IDRI on 27/Oct/2026.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-
-from unsloth import FastVisionModel  # FastLanguageModel for LLMs
-import os
-import sys
 import io
 import math
-import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, List, Any, Tuple
+from typing import Any, Dict, List, Tuple
 
 import torch
 from PIL import Image, ImageOps
 from torch.nn.utils.rnn import pad_sequence
 from datasets import load_dataset
-from huggingface_hub import snapshot_download
-from transformers import AutoModel, Trainer, TrainingArguments, EarlyStoppingCallback
-from unsloth import is_bf16_supported
 
-os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
-
-# ============================ Download base model ============================
-# The base model is downloaded into the same directory as this script.
-SCRIPT_DIR = Path(__file__).resolve().parent
-MODEL_DIR = SCRIPT_DIR / "deepseek_ocr2"
-
-snapshot_download("unsloth/DeepSeek-OCR-2", local_dir=str(MODEL_DIR))
-
-# Make `deepseek_ocr2.modeling_deepseekocr2` importable (downloaded with the model)
-sys.path.insert(0, str(SCRIPT_DIR))
-
-# ================================ Load model =================================
-model, tokenizer = FastVisionModel.from_pretrained(
-    str(MODEL_DIR),
-    load_in_4bit = False,  # Use 4bit to reduce memory use. False for 16bit LoRA.
-    auto_model = AutoModel,
-    trust_remote_code = True,
-    unsloth_force_compile = True,
-    use_gradient_checkpointing = "unsloth",  # True or "unsloth" for long context
-)
-
-# ================================== LoRA =====================================
-model = FastVisionModel.get_peft_model(
-    model,
-    target_modules = [
-        "q_proj",
-        "k_proj",
-        "v_proj",
-        "o_proj",
-        "gate_proj",
-        "up_proj",
-        "down_proj",
-    ],
-    r = 16,           # The larger, the higher the accuracy, but might overfit
-    lora_alpha = 16,  # Recommended alpha == r at least
-    lora_dropout = 0,
-    bias = "none",
-    random_state = 3407,
-    use_rslora = False,   # We support rank stabilized LoRA
-    loftq_config = None,  # And LoftQ
-)
-
-# ================================== Data =====================================
-# Each row of the JSONL files already contains a "messages" field in this format:
-# [
-#   {"role": "<|User|>", "content": "<image>\nFree OCR. ", "images": [<image path or bytes>]},
-#   {"role": "<|Assistant|>", "content": "<ground-truth text>"},
-# ]
-dataset = load_dataset(
-    "json",
-    data_files={
-        "train": "../../ocr_dataset/annotation/train.jsonl",
-        # "test": "../../ocr_dataset/annotation/test.jsonl",
-        "validation": "../../ocr_dataset/annotation/val.jsonl",
-    },
-)
-
-print(dataset)
-print(dataset["train"][0])
-
-# =============================== Data collator ===============================
 from deepseek_ocr2.modeling_deepseekocr2 import (
     text_encode,
     BasicImageTransform,
     dynamic_preprocess,
 )
+
+
+def convert_to_conversation(batch, instruction="<image>\nFree OCR."):
+    """Build the DeepSeek-OCR-2 conversation for each row (applied lazily, on access)."""
+    batch["messages"] = [
+        [
+            {"role": "<|User|>", "content": instruction, "images": [image]},
+            {"role": "<|Assistant|>", "content": text},
+        ]
+        for image, text in zip(batch["image"], batch["text"])
+    ]
+    return batch
+
+
+def load_datasets(
+    dataset_name,
+    subset="default",
+    instruction="<image>\nFree OCR.",
+    splits=("train", "validation"),
+):
+    """Load the requested dataset splits and attach the conversation messages."""
+    return {
+        split: load_dataset(dataset_name, subset, split=split).with_transform(
+            lambda batch, _instruction=instruction: convert_to_conversation(
+                batch, _instruction
+            )
+        )
+        for split in splits
+    }
 
 
 @dataclass
@@ -398,98 +347,3 @@ class DeepSeekOCR2DataCollator:
             "images_seq_mask": images_seq_mask,
             "images_spatial_crop": images_spatial_crop,
         }
-
-
-# ================================== Trainer ==================================
-FastVisionModel.for_training(model)  # Enable for training!
-
-data_collator = DeepSeekOCR2DataCollator(
-    tokenizer = tokenizer,
-    model = model,
-    image_size = 768,
-    base_size = 1024,
-    crop_mode = True,
-    train_on_responses_only = True,
-)
-
-trainer = Trainer(
-    model = model,
-    tokenizer = tokenizer,
-    data_collator = data_collator,  # Must use!
-    train_dataset = dataset["train"],
-    eval_dataset = dataset["validation"],
-    args = TrainingArguments(
-        per_device_train_batch_size = 4,
-        per_device_eval_batch_size = 2,
-        gradient_accumulation_steps = 6,  # Effective batch size = 4 x 6 = 24
-        warmup_steps = 5,
-
-        eval_strategy = "steps",
-        eval_steps = 1000,
-        save_steps = 1000,
-
-        num_train_epochs = 2,
-        learning_rate = 2e-4,
-        logging_steps = 10,
-        optim = "adamw_8bit",
-        weight_decay = 0.001,
-        lr_scheduler_type = "linear",
-        seed = 3407,
-        fp16 = not is_bf16_supported(),  # Use fp16 if bf16 is not supported
-        bf16 = is_bf16_supported(),      # Use bf16 if supported
-        output_dir = "outputs",
-        report_to = "none",              # For Weights and Biases
-        dataloader_num_workers = 2,
-
-        # You MUST put the below items for vision finetuning:
-        remove_unused_columns = False,
-
-        # Needed for early stopping / best checkpoint
-        metric_for_best_model = "eval_loss",
-        load_best_model_at_end = True,
-    ),
-    callbacks = [
-        EarlyStoppingCallback(
-            early_stopping_patience = 3,
-            early_stopping_threshold = 0.001,
-        ),
-    ],
-)
-
-# ============================ Show current memory stats ======================
-gpu_stats = torch.cuda.get_device_properties(0)
-start_gpu_memory = round(torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3)
-max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
-print(f"GPU = {gpu_stats.name}. Max memory = {max_memory} GB.")
-print(f"{start_gpu_memory} GB of memory reserved.")
-
-# ================================== Train ====================================
-start_time = time.time()
-
-# To continue from an existing checkpoint (in "outputs/"), use this instead:
-# trainer_stats = trainer.train(resume_from_checkpoint = True)
-trainer_stats = trainer.train()
-
-duration_seconds = int(time.time() - start_time)
-hours, remainder = divmod(duration_seconds, 3600)
-minutes, _ = divmod(remainder, 60)
-print(f"Total training time: {hours}h {minutes}m")
-
-# ========================== Show final memory and time stats =================
-used_memory = round(torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024, 3)
-used_memory_for_lora = round(used_memory - start_gpu_memory, 3)
-used_percentage = round(used_memory / max_memory * 100, 3)
-lora_percentage = round(used_memory_for_lora / max_memory * 100, 3)
-print(f"{trainer_stats.metrics['train_runtime']} seconds used for training.")
-print(
-    f"{round(trainer_stats.metrics['train_runtime']/60, 2)} minutes used for training."
-)
-print(f"Peak reserved memory = {used_memory} GB.")
-print(f"Peak reserved memory for training = {used_memory_for_lora} GB.")
-print(f"Peak reserved memory % of max memory = {used_percentage} %.")
-print(f"Peak reserved memory for training % of max memory = {lora_percentage} %.")
-
-# ================================== Save =====================================
-# This ONLY saves the LoRA adapters, not the full model.
-model.save_pretrained("deepseek_ocr_lora")  # Local saving
-tokenizer.save_pretrained("deepseek_ocr_lora")
