@@ -39,7 +39,7 @@ config = load_config()
 # ============================ Download base model ============================
 # The base model is downloaded into the same directory as this script.
 MODEL_DIR = SCRIPT_DIR / config["model"]["local_dir"]
-LORA_OUTPUT_PATH = config["model"]["output_path"]  # Save LoRA adapters here
+LORA_OUTPUT_PATH = SCRIPT_DIR / config["model"]["output_path"]  # Save LoRA adapters here
 
 snapshot_download(config["model"]["name"], local_dir = str(MODEL_DIR))
 

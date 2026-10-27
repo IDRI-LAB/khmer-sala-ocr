@@ -14,7 +14,6 @@ from deepseek_ocr2.modeling_deepseekocr2 import (
     dynamic_preprocess,
 )
 
-
 def convert_to_conversation(batch, instruction="<image>\nFree OCR."):
     """Build the DeepSeek-OCR-2 conversation for each row (applied lazily, on access)."""
     batch["messages"] = [
